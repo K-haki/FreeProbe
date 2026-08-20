@@ -1,0 +1,10 @@
+# Build artifacts
+bin/
+.output/
+
+# Runtime logs (regenerated each run)
+*.log
+
+# Editor / OS noise
+*.swp
+.DS_Store

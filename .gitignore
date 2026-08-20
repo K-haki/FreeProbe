@@ -1,0 +1,17 @@
+# 构建产物与中间产物
+bpftime/build/
+.output/
+*.o
+*.a
+
+# e2e 二进制与日志
+e2e/bin/
+*.log
+e2e/observer_dump.*
+e2e/dump_victim.*
+
+# 编辑器/系统
+.vscode/
+.idea/
+*~
+.DS_Store

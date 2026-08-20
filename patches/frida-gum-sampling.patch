@@ -1,0 +1,137 @@
+diff --git a/gum/backend-x86/guminterceptor-x86.c b/gum/backend-x86/guminterceptor-x86.c
+index a861510d..1bec7b12 100644
+--- a/gum/backend-x86/guminterceptor-x86.c
++++ b/gum/backend-x86/guminterceptor-x86.c
+@@ -27,6 +27,16 @@
+ #define GUM_FRAME_OFFSET_TOP \
+     (GUM_FRAME_OFFSET_NEXT_HOP + sizeof (gpointer))
+ 
++/* hk_start
++ * GUM_TCB_TID_OFFSET: offset of `tid` (kernel thread id, pid_t) inside the
++ * glibc TCB on x86-64. Verified empirically by hk-tests/tid_fs_probe.c on
++ * Ubuntu 24.04 / glibc 2.39 (see step1-fs-tid-verification.md). If you port
++ * this code to a machine with a different glibc, re-run the probe and adjust.
++ */
++#define GUM_SAMPLE_RATE 20
++#define GUM_TCB_TID_OFFSET 0x2d0
++/* hk_end */
++
+ #define GUM_FCDATA(context) \
+     ((GumX86FunctionContextData *) (context)->backend_data.storage)
+ 
+@@ -187,18 +197,98 @@ _gum_interceptor_backend_create_trampoline (GumInterceptorBackend * self,
+     ctx->on_enter_trampoline = gum_x86_writer_cur (cw);
+ 
+     gum_x86_writer_put_push_near_ptr (cw, function_ctx_ptr);
++
++    /* hk_start
++     *
++     * Sampling guard. Layout after this block:
++     *   - push ctx_ptr      ; original
++     *   - push rax          ; saved
++     *   - push rcx          ; saved (value register)
++     *   - push rdx          ; saved (index register)
++     * Then:
++     *   mov  rax, [rsp+0x18]   ; rax = GumFunctionContext* (3 pushes below)
++     *   mov  edx, fs:[0x2d0]   ; edx = real kernel TID (verified offset)
++     *   and  edx, 0x3f         ; edx = bucket index in [0,63]
++     *   movzx ecx, byte [rax+rdx]  ; ecx = counter[bucket]
++     *   inc  ecx
++     *   mov  [rax+rdx], cl     ; store back at the SAME bucket (rdx unchanged)
++     *   cmp  ecx, GUM_SAMPLE_RATE
++     *   jl   sampling_skip
++     *   mov  byte [rax+rdx], 0 ; reset the SAME bucket
++     *   pop  rdx / rcx / rax   ; fall through to jmp enter_thunk
++     *
++     * Register discipline: rdx holds the bucket index for the entire block;
++     * rcx holds the counter value. They must not be swapped.
++     */
++    gum_x86_writer_put_push_reg (cw, GUM_X86_RAX);
++    gum_x86_writer_put_push_reg (cw, GUM_X86_RCX);
++    gum_x86_writer_put_push_reg (cw, GUM_X86_RDX);
++
++    gum_x86_writer_put_mov_reg_reg_offset_ptr (cw, GUM_X86_RAX,
++        GUM_X86_RSP, 0x18);                                         // rax = ctx (3 pushes below)
++    gum_x86_writer_put_mov_reg_fs_u32_ptr (cw, GUM_X86_RDX,
++        GUM_TCB_TID_OFFSET);                                        // edx = real TID
++    gum_x86_writer_put_and_reg_u32 (cw, GUM_X86_RDX, 0x3f);         // edx = bucket index
++
++    /* movzx ecx, byte [rax + rdx]  — bytes: 0F B6 0C 10
++     * SIB=0x10: scale=00, index=010 (rdx), base=000 (rax) => [rax + rdx*1] */
++    gum_x86_writer_put_u8 (cw, 0x0F);
++    gum_x86_writer_put_u8 (cw, 0xB6);
++    gum_x86_writer_put_u8 (cw, 0x0C);
++    gum_x86_writer_put_u8 (cw, 0x10);
++
++    /* inc ecx — bytes: FF C1 */
++    gum_x86_writer_put_u8 (cw, 0xFF);
++    gum_x86_writer_put_u8 (cw, 0xC1);
++
++    /* mov [rax + rdx], cl  — bytes: 88 0C 10
++     * Writes the incremented value back to the SAME bucket the index came from. */
++    gum_x86_writer_put_u8 (cw, 0x88);
++    gum_x86_writer_put_u8 (cw, 0x0C);
++    gum_x86_writer_put_u8 (cw, 0x10);
++
++    gum_x86_writer_put_cmp_reg_i32 (cw, GUM_X86_RCX, GUM_SAMPLE_RATE);  // compare with sampling rate
++    gum_x86_writer_put_jcc_short_label (cw, X86_INS_JL,
++        "sampling_skip", GUM_NO_HINT);
++
++    /* mov byte [rax + rdx], 0  — bytes: C6 04 10 00  (reset the SAME bucket) */
++    gum_x86_writer_put_u8 (cw, 0xC6);
++    gum_x86_writer_put_u8 (cw, 0x04);
++    gum_x86_writer_put_u8 (cw, 0x10);
++    gum_x86_writer_put_u8 (cw, 0x00);
++
++    gum_x86_writer_put_pop_reg (cw, GUM_X86_RDX);
++    gum_x86_writer_put_pop_reg (cw, GUM_X86_RCX);
++    gum_x86_writer_put_pop_reg (cw, GUM_X86_RAX);
++    /* hk_end */
++
+     gum_x86_writer_put_jmp_address (cw, GUM_ADDRESS (self->enter_thunk->data));
+ 
++    /* hk_start */
++    gum_x86_writer_put_label (cw, "sampling_skip");
++    gum_x86_writer_put_pop_reg (cw, GUM_X86_RDX);
++    gum_x86_writer_put_pop_reg (cw, GUM_X86_RCX);
++    gum_x86_writer_put_pop_reg (cw, GUM_X86_RAX);
++    gum_x86_writer_put_add_reg_imm (cw, GUM_X86_RSP, 8);            // drop pushed ctx_ptr
++    gum_x86_writer_put_jmp_near_label (cw, "invoke_trampoline");
++    /* hk_end */
++
+     ctx->on_leave_trampoline = gum_x86_writer_cur (cw);
+ 
+     gum_x86_writer_put_push_near_ptr (cw, function_ctx_ptr);
+     gum_x86_writer_put_jmp_address (cw, GUM_ADDRESS (self->leave_thunk->data));
+ 
+-    gum_x86_writer_flush (cw);
+-    g_assert (gum_x86_writer_offset (cw) <= ctx->trampoline_slice->size);
++    /* hk_start: do NOT flush here. The fast path's jmp_near_label references
++     * "invoke_trampoline", which is defined further down. GumX86Writer's
++     * flush clears label_refs unconditionally on failure, so flushing now
++     * would silently drop the reference and leave disp32 = -5 (self-loop).
++     * The single flush after the relocator handles all label resolution. */
+   }
+ 
+   ctx->on_invoke_trampoline = gum_x86_writer_cur (cw);
++  /* hk_start */
++  gum_x86_writer_put_label (cw, "invoke_trampoline");
++  /* hk_end */
+   gum_x86_relocator_reset (rl, (guint8 *) ctx->function_address, cw);
+ 
+   do
+diff --git a/gum/guminterceptor-priv.h b/gum/guminterceptor-priv.h
+index 89a06c31..afe66eff 100644
+--- a/gum/guminterceptor-priv.h
++++ b/gum/guminterceptor-priv.h
+@@ -33,6 +33,10 @@ union _GumFunctionContextBackendData
+ 
+ struct _GumFunctionContext
+ {
++  /* hk_start */
++  guint8 sampling_counters[64];
++  /* hk_end */
++
+   gpointer function_address;
+ 
+   gpointer grafted_hook;
