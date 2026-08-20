@@ -29,8 +29,10 @@ test/bin
 test/lib64
 .test_log
 test/share
-bpftool
-bpftoolx
+# freeprobe: 裸名 bpftool 会误杀 third_party/bpftool 源码（上游本意只是
+# 忽略根目录下编出的 bpftool 二进制），改为锚定仓库根
+/bpftool
+/bpftoolx
 a.out
 documents/dlsym/dlsym
 documents/elfoffset/myprogram
