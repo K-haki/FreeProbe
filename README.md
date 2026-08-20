@@ -67,17 +67,3 @@ frida-gum-devkit-16.1.2-linux-x86_64.tar.xz`），日常构建无需 frida 环�
 | 多线程 PASS | e2e/ | `fs:[0x2d0]` 取到真 per-thread TID |
 | trampoline dump | e2e/（DUMP_TRAMPOLINE=1） | gdb 反汇编插桩入口/trampoline/thunk |
 | `sampling_trampoline_test.c` | tests/ | 纯 Frida 层（需外部 frida 构建环境） |
-
-## 已知环境要点
-
-- gdb attach 需要 `sudo`（yama ptrace_scope=1），交互终端输一次密码即可；
-- bpftime agent 走 ubpf 后端（`BPFTIME_VM_NAME=ubpf`），eBPF 程序需避免
-  CO-RE 与原子指令（见 `e2e/README.md` 第 4.3 节）；
-- observer 必须先于 victim 完成 attach：agent 只在启动时读一次 handler 表
-  （`e2e/run_test.sh` 的 dump 阶段对这一顺序有详细注释）。
-
-## 上游与差异
-
-- frida-gum 上游：frida/frida（16.1.2），差异见 `patches/frida-gum-sampling.patch`
-- bpftime 上游：eunomia-bpf/bpftime，差异见 `patches/bpftime-local.patch`
-- 历史过程记录（路径为旧布局，仅供参考）：`e2e/PROCESS.md`

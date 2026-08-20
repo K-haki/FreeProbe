@@ -248,7 +248,7 @@ agent.so 链了未带 `_frida_` 前缀的 libfrida-gum.a（直接用了
 libfrida-gum-1.0.a 而不是 devkit）。重新跑 `deploy_frida_to_bpftime.sh`
 让它用 `releng/devkit.py` 生成正确的 devkit。
 
-## 8. 一句话结论
+## 8. 总结
 
 `run_test.sh` PASS = `OBSERVED_CALLS / 20 ≈ SAMPLE_HITS` = FreeProbe 采样
 设计在 bpftime userspace uprobe 完整链路上真实生效。多线程 PASS 进一步
